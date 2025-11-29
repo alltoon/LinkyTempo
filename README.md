@@ -3,6 +3,8 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![Version](https://img.shields.io/github/v/release/alltoon/LinkyTempo)](https://github.com/alltoon/LinkyTempo/releases)
 
+[![French Version](https://img.shields.io/badge/Documentation-Français-blue?style=for-the-badge&logo=france)](README_fr.md)
+
 This custom integration for Home Assistant retrieves your Linky power consumption and automatically distributes it across the **6 tariff periods of the EDF Tempo offer** (Blue/White/Red and Peak/Off-Peak Hours).
 
 Unlike standard integrations, this one accurately reconstructs your history by cross-referencing your load curve with the historical Tempo color of the day.
