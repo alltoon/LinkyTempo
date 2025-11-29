@@ -7,6 +7,8 @@ This custom integration for Home Assistant retrieves your Linky power consumptio
 
 Unlike standard integrations, this one accurately reconstructs your history by cross-referencing your load curve with the historical Tempo color of the day.
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=alltoon&repository=https%3A%2F%2Fgithub.com%2Falltoon%2FLinkyTempo&category=Integrations)
+
 ## Features
 
 *   🚀 **Easy setup** via the user interface (UI).
