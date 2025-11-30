@@ -4,6 +4,7 @@
   "codeowners": ["@alltoon"],
   "config_flow": true,
   "dependencies": [],
+  "after_dependencies": ["recorder"],
   "documentation": "https://github.com/alltoon/LinkyTempo",
   "issue_tracker": "https://github.com/alltoon/LinkyTempo/issues",
   "iot_class": "cloud_polling",
