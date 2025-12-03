@@ -253,9 +253,3 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
         except Exception:
             pass
         return "UNKNOWN"
-```eof
-
-### Conseil de nettoyage
-Comme tu as eu des valeurs négatives aujourd'hui (qui sont en fait des valeurs "proches de zéro" alors qu'elles devraient être "cumul d'hier + un peu"), il faut impérativement supprimer ces points aberrants dans ta base de données via les *Outils de développement > Statistiques > Corriger*, sinon ton graphique restera cassé pour cette journée.
-
-Après la mise à jour du code, ce problème ne pourra plus revenir car le code refusera tout simplement de traiter le jour J.
