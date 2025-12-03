@@ -21,7 +21,6 @@ _LOGGER = logging.getLogger(__name__)
 
 API_TEMPO_URL = "https://www.api-couleur-tempo.fr/api/jourTempo"
 
-
 class LinkyTempoCoordinator(DataUpdateCoordinator):
     """Gère la récupération conso, la couleur Tempo et l'injection d'historique."""
 
@@ -30,7 +29,7 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name="Linky Tempo Data",
-            update_interval=timedelta(hours=4),
+            update_interval=timedelta(hours=4), 
         )
         self.prm = prm
         self.token = token
@@ -41,9 +40,13 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
         """Fonction principale appelée par HA."""
         try:
             today = datetime.now()
-            str_end = today.strftime("%Y-%m-%d")
-            # On prend 7 jours pour le rattrapage
-            str_start = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+            
+            # --- MODIFICATION CRITIQUE : NE PAS DEMANDER AUJOURD'HUI ---
+            # On arrête la requête strictement à HIER pour éviter tout bug sur la journée en cours
+            str_end = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+            
+            # On remonte 7 jours en arrière pour le rattrapage
+            str_start = (today - timedelta(days=8)).strftime("%Y-%m-%d")
 
             _LOGGER.debug(f"Récupération Linky {self.prm} : {str_start} -> {str_end}")
 
@@ -53,7 +56,7 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
 
             if not conso_data or "interval_reading" not in conso_data:
                 _LOGGER.warning("Aucune donnée de consommation reçue.")
-                return {}
+                return {} 
 
             return await self._process_load_curve(conso_data)
 
@@ -72,7 +75,7 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
     async def _process_load_curve(self, api_data):
         # 1. Init
         stats = {k: 0.0 for k in ["BLUE_HC", "BLUE_HP", "WHITE_HC", "WHITE_HP", "RED_HC", "RED_HP"]}
-
+        
         readings = api_data.get("interval_reading", [])
         if not readings:
             return stats
@@ -85,64 +88,57 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
         if not stat_ids:
             return stats
 
-        # 2. Récupération du DERNIER POINT CONNU en base (Append Only)
+        # 2. Récupération historique
         try:
             ids_list = list(stat_ids.values())
-            last_stats_db = await self.hass.async_add_executor_job(
+            last_stats = await self.hass.async_add_executor_job(
                 lambda: get_last_statistics(self.hass, 1, ids_list, True, {"sum", "start"})
             )
         except Exception as e:
             _LOGGER.warning(f"Impossible de récupérer l'historique : {e}")
-            last_stats_db = {}
+            last_stats = {}
 
-        # On initialise nos compteurs avec les valeurs de la DB
         current_sums = {}
         last_db_dates = {}
-
+        
         for key, stat_id in stat_ids.items():
-            if stat_id in last_stats_db and last_stats_db[stat_id]:
-                last_rec = last_stats_db[stat_id][0]
+            if stat_id in last_stats and last_stats[stat_id]:
+                last_rec = last_stats[stat_id][0]
                 current_sums[key] = last_rec.get("sum") or 0.0
                 ts_str = last_rec.get("start")
-
-                # Parsing robuste de la date DB
+                
                 if isinstance(ts_str, str):
                     dt_val = dt_util.parse_datetime(ts_str)
                 else:
                     dt_val = ts_str
-
-                # Sécurité Timezone
+                
                 if dt_val and dt_val.tzinfo is None:
                     dt_val = dt_val.replace(tzinfo=dt_util.UTC)
-
+                
                 last_db_dates[key] = dt_val
-
-                # Debug log pour vérifier d'où on part
-                _LOGGER.debug(f"[{key}] Reprise historique à {dt_val} (Cumul: {current_sums[key]})")
             else:
                 current_sums[key] = 0.0
                 last_db_dates[key] = None
-                _LOGGER.debug(f"[{key}] Historique vide, démarrage à 0.")
 
         readings.sort(key=lambda x: x["date"])
-
+        
         paris_tz = dt_util.get_time_zone("Europe/Paris")
 
-        # 3. Pré-traitement (Bucketing + Correction Timezone)
+        # 3. Bucketing
         hourly_deltas = {k: {} for k in stats.keys()}
 
         for reading in readings:
             val = int(reading["value"])
             naive_dt = datetime.strptime(reading["date"], "%Y-%m-%d %H:%M:%S")
-
-            # FORCE PARIS
+            
+            # Application du fuseau
             ts = naive_dt.replace(tzinfo=paris_tz)
-
-            # CORRECTION -1H (Décalage API)
+            
+            # Correction -1H
             ts = ts - timedelta(hours=1)
 
             kwh = val / 4000.0
-
+            
             # Logique Tempo
             if ts.hour < 6:
                 tempo_date_obj = (ts - timedelta(days=1)).date()
@@ -164,60 +160,48 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
 
             if color != "UNKNOWN":
                 key = f"{color}_{mode}"
-
-                # Mise à jour sensor temps réel (indépendant de l'historique)
+                
+                # Mise à jour sensor temps réel
                 if key in stats:
                     stats[key] += kwh
 
-                # Bucket : on range dans l'heure précédente
+                # Bucket (Heure précédente)
                 hour_bucket = (ts - timedelta(seconds=1)).replace(minute=0, second=0, microsecond=0)
 
                 if hour_bucket not in hourly_deltas[key]:
                     hourly_deltas[key][hour_bucket] = 0.0
-
+                
                 hourly_deltas[key][hour_bucket] += kwh
 
-        # 4. Injection en mode "APPEND ONLY"
-        # On ne touche jamais au passé. On ne fait qu'ajouter ce qui dépasse la dernière date connue.
-
-        # Limite stricte : Minuit ce matin. Aucune donnée d'aujourd'hui ne passe.
+        # 4. Injection en mode "APPEND ONLY" avec limite stricte
+        # Limite stricte : Aujourd'hui 00:00 (Minuit ce matin).
+        # Tout ce qui est >= à cette date est rejeté.
         cutoff_date = dt_util.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         for key, delta_map in hourly_deltas.items():
             if not delta_map:
                 continue
-
+            
             statistic_id = stat_ids[key]
             data_points = []
-
-            # On parcourt les heures dans l'ordre chronologique
+            
             sorted_hours = sorted(delta_map.keys())
-
+            
             for hour_start in sorted_hours:
-                # La stat est posée à la FIN de l'heure
                 target_ts = hour_start + timedelta(hours=1)
-
-                # 1. Filtre Futur/Aujourd'hui
+                
+                # DOUBLE SÉCURITÉ : On rejette tout ce qui touche à aujourd'hui
                 if target_ts > cutoff_date:
                     continue
 
                 consumption_for_this_hour = delta_map[hour_start]
-
-                # 2. Filtre Continuité (Append Only)
-                # Si cette heure est déjà en base (ou avant), ON IGNORE.
-                # Mais attention : on ne met PAS à jour current_sums ici car current_sums
-                # a déjà été initialisé à la valeur finale de la DB !
-                # On ne doit ajouter que le DELTA des nouvelles heures.
-
+                
                 last_db = last_db_dates.get(key)
-
                 if last_db and target_ts <= last_db:
-                    # Déjà connu, on passe
                     continue
-
-                # C'est une NOUVELLE heure inconnue, on l'ajoute à la suite
+                
                 current_sums[key] += consumption_for_this_hour
-
+                
                 data_points.append(
                     StatisticData(
                         start=target_ts,
@@ -229,8 +213,7 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
             if not data_points:
                 continue
 
-            _LOGGER.info(
-                f"Injection de {len(data_points)} NOUVEAUX points pour {key}. Nouveau cumul atteint: {data_points[-1]['sum']:.2f} kWh")
+            _LOGGER.info(f"Injection de {len(data_points)} points pour {key}. Nouveau cumul : {data_points[-1]['sum']:.2f} kWh")
 
             metadata = StatisticMetaData(
                 has_mean=False,
@@ -239,10 +222,11 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
                 source="recorder",
                 statistic_id=statistic_id,
                 unit_of_measurement="kWh",
+                mean_type=None
             )
-
+            
             async_import_statistics(self.hass, metadata, data_points)
-
+            
         return stats
 
     def _get_french_slug(self, key):
@@ -269,3 +253,9 @@ class LinkyTempoCoordinator(DataUpdateCoordinator):
         except Exception:
             pass
         return "UNKNOWN"
+```eof
+
+### Conseil de nettoyage
+Comme tu as eu des valeurs négatives aujourd'hui (qui sont en fait des valeurs "proches de zéro" alors qu'elles devraient être "cumul d'hier + un peu"), il faut impérativement supprimer ces points aberrants dans ta base de données via les *Outils de développement > Statistiques > Corriger*, sinon ton graphique restera cassé pour cette journée.
+
+Après la mise à jour du code, ce problème ne pourra plus revenir car le code refusera tout simplement de traiter le jour J.
